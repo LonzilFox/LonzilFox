@@ -1,0 +1,72 @@
+name: Sync profile README
+
+# Changes in OTHER repositories do not trigger this workflow automatically.
+# Schedule refreshes the public portfolio; run manually for immediate updates.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: profile-topics-sync
+  cancel-in-progress: false
+
+jobs:
+  refresh-readme:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out profile repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Rebuild project list from public GitHub Topics
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/sync_repos.py --target profile --username LonzilFox
+
+      - name: Review generated changes
+        shell: bash
+        run: |
+          git status --short
+          git diff --stat -- README.md
+
+      - name: Commit and push updated README
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- README.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --cached --quiet; then
+            # Public scheduled workflows can be disabled after 60 days with no repository activity.
+            # A rare empty commit keeps the sync workflow active without changing the README.
+            last_commit=$(git log -1 --format=%ct)
+            age_days=$(( ($(date +%s) - last_commit) / 86400 ))
+            if (( age_days < 35 )); then
+              echo 'Project directory is already up to date.'
+              echo '### Profile project sync' >> "$GITHUB_STEP_SUMMARY"
+              echo 'No changes required.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            git commit --allow-empty -m 'chore: keep profile sync schedule active'
+          else
+            git commit -m 'chore: refresh profile repository index'
+          fi
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo '::error::Could not push generated README. Check Actions permissions (Contents: write), branch protection and new remote commits.'
+            exit 1
+          fi
+          echo '### Profile project sync' >> "$GITHUB_STEP_SUMMARY"
+          echo 'README.md updated and pushed to the default branch.' >> "$GITHUB_STEP_SUMMARY"
